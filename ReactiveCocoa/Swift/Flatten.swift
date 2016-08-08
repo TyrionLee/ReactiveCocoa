@@ -431,11 +431,11 @@ private final class ConcatState<Value, Error: Swift.Error> {
 
 		var shouldStart = true
 
-		queuedSignalProducers.modify { queue in
+		queuedSignalProducers.modify {
 			// An empty queue means the concat is idle, ready & waiting to start
 			// the next producer.
-			shouldStart = queue.isEmpty
-			queue.append(producer)
+			shouldStart = $0.isEmpty
+			$0.append(producer)
 		}
 
 		if shouldStart {
@@ -450,12 +450,12 @@ private final class ConcatState<Value, Error: Swift.Error> {
 
 		var nextSignalProducer: SignalProducer<Value, Error>?
 
-		queuedSignalProducers.modify { queue in
+		queuedSignalProducers.modify {
 			// Active producers remain in the queue until completed. Since
 			// dequeueing happens at completion of the active producer, the
 			// first producer in the queue can be removed.
-			if !queue.isEmpty { queue.remove(at: 0) }
-			nextSignalProducer = queue.first
+			if !$0.isEmpty { $0.remove(at: 0) }
+			nextSignalProducer = $0.first
 		}
 
 		return nextSignalProducer
@@ -502,8 +502,12 @@ extension SignalProtocol where Value: SignalProducerProtocol, Error == Value.Err
 	private func observeMerge(_ observer: Observer<Value.Value, Error>, _ disposable: CompositeDisposable) -> Disposable? {
 		let inFlight = Atomic(1)
 		let decrementInFlight = {
-			let orig = inFlight.modify { $0 -= 1 }
-			if orig == 1 {
+			let shouldComplete: Bool = inFlight.modify {
+				$0 -= 1
+				return $0 == 0
+			}
+
+			if shouldComplete {
 				observer.sendCompleted()
 			}
 		}
@@ -640,22 +644,24 @@ extension SignalProtocol where Value: SignalProducerProtocol, Error == Value.Err
 							// If interruption occurred as a result of a new
 							// producer arriving, we don't want to notify our
 							// observer.
-							let original = state.modify { state in
-								if !state.replacingInnerSignal {
-									state.innerSignalComplete = true
+							let shouldComplete: Bool = state.modify {
+								if !$0.replacingInnerSignal {
+									$0.innerSignalComplete = true
 								}
+								return !$0.replacingInnerSignal && $0.outerSignalComplete
 							}
 
-							if !original.replacingInnerSignal && original.outerSignalComplete {
+							if shouldComplete {
 								observer.sendCompleted()
 							}
 
 						case .completed:
-							let original = state.modify { state in
-								state.innerSignalComplete = true
+							let shouldComplete: Bool = state.modify {
+								$0.innerSignalComplete = true
+								return $0.outerSignalComplete
 							}
 
-							if original.outerSignalComplete {
+							if shouldComplete {
 								observer.sendCompleted()
 							}
 
@@ -664,16 +670,20 @@ extension SignalProtocol where Value: SignalProducerProtocol, Error == Value.Err
 						}
 					}
 				}
+
 			case let .failed(error):
 				observer.sendFailed(error)
+
 			case .completed:
-				let original = state.modify { state in
-					state.outerSignalComplete = true
+				let shouldComplete: Bool = state.modify {
+					$0.outerSignalComplete = true
+					return $0.innerSignalComplete
 				}
 
-				if original.innerSignalComplete {
+				if shouldComplete {
 					observer.sendCompleted()
 				}
+
 			case .interrupted:
 				observer.sendInterrupted()
 			}

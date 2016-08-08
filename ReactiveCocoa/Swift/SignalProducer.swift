@@ -1736,31 +1736,34 @@ extension SignalProducer {
 			let replayBuffer = ReplayBuffer<Value>()
 			var replayValues: [Value] = []
 			var replayToken: RemovalToken?
-			var next = state.modify { state in
-				replayValues = state.values
+
+			var terminationEvent: Event<Value, Error>? = state.modify {
+				replayValues = $0.values
 				if replayValues.isEmpty {
-					token = state.observers?.insert(observer)
+					token = $0.observers?.insert(observer)
 				} else {
-					replayToken = state.replayBuffers.insert(replayBuffer)
+					replayToken = $0.replayBuffers.insert(replayBuffer)
 				}
+				return $0.terminationEvent
 			}
 
 			while !replayValues.isEmpty {
 				replayValues.forEach(observer.sendNext)
 
-				next = state.modify { state in
+				terminationEvent = state.modify {
 					replayValues = replayBuffer.values
 					replayBuffer.values = []
 					if replayValues.isEmpty {
 						if let replayToken = replayToken {
-							state.replayBuffers.remove(using: replayToken)
+							$0.replayBuffers.remove(using: replayToken)
 						}
-						token = state.observers?.insert(observer)
+						token = $0.observers?.insert(observer)
 					}
+					return $0.terminationEvent
 				}
 			}
 
-			if let terminationEvent = next.terminationEvent {
+			if let terminationEvent = terminationEvent {
 				observer.action(terminationEvent)
 			}
 
@@ -1774,18 +1777,20 @@ extension SignalProducer {
 		}
 
 		let bufferingObserver: Signal<Value, Error>.Observer = Observer { event in
-			let originalState = state.modify { state in
+			let observers: Bag<Signal<Value, Error>.Observer>? = state.modify {
+				let observers = $0.observers
 				if let value = event.value {
-					state.add(value, upTo: capacity)
+					$0.add(value, upTo: capacity)
 				} else {
 					// Disconnect all observers and prevent future
 					// attachments.
-					state.terminationEvent = event
-					state.observers = nil
+					$0.terminationEvent = event
+					$0.observers = nil
 				}
+				return observers
 			}
 
-			originalState.observers?.forEach { $0.action(event) }
+			observers?.forEach { $0.action(event) }
 		}
 
 		return (producer, bufferingObserver)
